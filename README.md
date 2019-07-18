@@ -20,18 +20,96 @@ You can then e.g. `GET` http://localhost:9238/health or http://host.docker.inter
 
 ## API
 
-- `POST` to `/` with `Content-Type: application/json`. The following fields are required:
-  - `filepath` string, e.g. `the/file.go` or `file.go` or `Dockerfile`, see "Supported file extensions" section below.
-  - `theme` string, e.g. `Solarized (dark)`, see "Embedded themes" section below.
-  - `code` string, i.e. the literal code to highlight.
-- The response is a JSON object of either:
-  - A successful response (`data` field):
-    - `data` string with syntax highlighted response. The input `code` string [is properly escaped](https://github.com/sourcegraph/syntect_server/blob/ee3810f70e5701b961b7249393dbac8914c162ce/syntect/src/html.rs#L6) and as such can be directly rendered in the browser safely.
-    - `plaintext` boolean indicating whether a syntax could not be found for the file and instead it was rendered as plain text.
-  - An error response (`error` field), one of:
-    - `{"error": "invalid theme", "code": "invalid_theme"}`
-    - `{"error": "resource not found", "code": "resource_not_found"}`
-- `GET` to `/health` to receive an `OK` health check response / ensure the service is alive.
+#### Highlighting
+
+```bash
+curl -H "Content-Type: application/json" -X POST -d '{"filepath": "main.go", "theme": "Solarized (dark)", "code": "package main\n\nfunc main() {}"}' http://localhost:8000 | jq
+```
+
+- `filepath` can be e.g. `the/file.go` or `file.go` or `Dockerfile`, see "Supported file extensions" section below.
+- `theme` can be any valid theme in the "Embedded themes" section below.
+- `code` is the literal code to highlight.
+
+Output:
+
+```json
+{
+  "data": "<pre style=\"background-color:#002b36;\">\n<span style=\"color:#859900;\">package</span><span style=\"color:#839496;\"> main\n</span><span style=\"color:#839496;\">\n</span><span style=\"color:#268bd2;\">func </span><span style=\"color:#b58900;\">main</span><span style=\"color:#839496;\">() {}</span></pre>",
+  "detected_language": "Go",
+  "plaintext": false
+}
+```
+
+- `data` is the syntax highlighted HTML. The input `code` string [is properly escaped](https://github.com/sourcegraph/syntect_server/blob/ee3810f70e5701b961b7249393dbac8914c162ce/syntect/src/html.rs#L6) and as such this response can be directly rendered in the browser safely.
+- `plaintext` indicates whether a syntax could not be found for the file and instead it was rendered as plain text.
+
+In the event of an error, possible responses are:
+
+```json
+{"error": "invalid theme", "code": "invalid_theme"}
+{"error": "resource not found", "code": "resource_not_found"}
+{"error": "panic while highlighting code", "code": "panic"}
+```
+
+#### Health check:
+
+```bash
+curl http://localhost:9238/health
+```
+
+Output:
+
+```
+OK
+```
+
+Otherwise just no response (only indicates server is alive.)
+
+#### Scopification
+
+```
+curl -H "Content-Type: application/json" -X POST -d '{"filepath": "main.go", "theme": "", "scopify": true, "code": "package main\n\nfunc main() {}"}' http://localhost:8000
+```
+
+Output:
+
+```json
+{
+  "detected_language": "Go",
+  "plaintext": false,
+  "scopified_regions":[
+    {"length":7,"offset":0,"scopes":[0,1]},
+    {"length":6,"offset":7,"scopes":[0]},
+    {"length":1,"offset":13,"scopes":[0]},
+    {"length":4,"offset":14,"scopes":[0,2,3]},
+    {"length":1,"offset":18,"scopes":[0,2]},
+    {"length":4,"offset":19,"scopes":[0,2,4]},
+    {"length":1,"offset":23,"scopes":[0,5,6,7]},
+    {"length":1,"offset":24,"scopes":[0,5,6,8]},
+    {"length":1,"offset":25,"scopes":[0,9]},
+    {"length":1,"offset":26,"scopes":[0,9,10,11]},
+    {"length":1,"offset":27,"scopes":[0,9,10,12]}
+  ],
+  "scopified_scope_names":[
+    "source.go",
+    "keyword.control.go",
+    "meta.function.declaration.go",
+    "storage.type.go",
+    "entity.name.function.go",
+    "meta.function.parameters.go",
+    "meta.group.go",
+    "punctuation.definition.group.begin.go",
+    "punctuation.definition.group.end.go",
+    "meta.function.go",
+    "meta.block.go",
+    "punctuation.definition.block.begin.go",
+    "punctuation.definition.block.end.go"
+  ]
+}
+```
+
+- `scopified_regions` indicates the byte regions of the input text which had `scopes` applied to them. The `scopes` are indexes into the `scopified_scope_names` array.
+- `scopified_scope_names` are the names of the scopes. These are Sublime Text 3 scope names which come from the syntax definitions, see https://www.sublimetext.com/docs/3/scope_naming.html
 
 ## Client
 
