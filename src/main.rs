@@ -7,18 +7,19 @@ extern crate rayon;
 #[macro_use] extern crate serde_derive;
 extern crate serde_json;
 extern crate syntect;
+extern crate indexmap;
 
 use rocket_contrib::json::{Json, JsonValue};
 use std::env;
 use std::path::Path;
 use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
 use std::panic;
 use std::fmt::Write;
-use syntect::easy::HighlightLines;
+use syntect::easy::{HighlightLines, ScopeRegionIterator};
 use syntect::highlighting::{Color, Theme};
 use syntect::html::{styles_to_coloured_html, IncludeBackground};
-use syntect::parsing::SyntaxDefinition;
+use syntect::parsing::{ScopeStack, ParseState, SyntaxDefinition, SyntaxSet};
+use indexmap::set::IndexSet;
 
 thread_local! {
     static SYNTAX_SET: SyntaxSet = SyntaxSet::load_defaults_newlines();
@@ -38,6 +39,10 @@ struct Query {
     // default empty string value for backwards compat with clients who do not specify this field.
     #[serde(default)]
     filepath: String,
+
+    // default false value as this field is optional.
+    #[serde(default)]
+    scopify: bool,
 
     theme: String,
     code: String,
@@ -60,15 +65,6 @@ fn index(q: Json<Query>) -> JsonValue {
 
 fn highlight(q: Json<Query>) -> JsonValue {
     SYNTAX_SET.with(|syntax_set| {
-        // Determine theme to use.
-        //
-        // TODO(slimsag): We could let the query specify the theme file's actual
-        // bytes? e.g. via `load_from_reader`.
-        let theme = match THEME_SET.themes.get(&q.theme) {
-            Some(v) => v,
-            None => return json!({"error": "invalid theme", "code": "invalid_theme"}),
-        };
-
         // Determine syntax definition by extension.
         let mut is_plaintext = false;
         let syntax_def = if q.filepath == "" {
@@ -122,12 +118,33 @@ fn highlight(q: Json<Query>) -> JsonValue {
             }
         };
 
+        if q.scopify {
+            let (scope_names, regions) = scopify_string_newlines(&q.code, &syntax_def);
+            return json!({
+                "plaintext": is_plaintext,
+                "detected_language": syntax_def.name,
+                "scopified_scope_names": scope_names,
+                "scopified_regions": regions,
+            })
+        }
+
+
+        // Determine theme to use.
+        //
+        // TODO(slimsag): We could let the query specify the theme file's actual
+        // bytes? e.g. via `load_from_reader`.
+        let theme = match THEME_SET.themes.get(&q.theme) {
+            Some(v) => v,
+            None => return json!({"error": "invalid theme", "code": "invalid_theme"}),
+        };
+
         // TODO(slimsag): return the theme's background color (and other info??) to caller?
         // https://github.com/trishume/syntect/blob/c8b47758a3872d478c7fc740782cd468b2c0a96b/examples/synhtml.rs#L24
 
         json!({
             "data": highlighted_snippet_for_string_newlines(&q.code, &syntax_def, theme),
             "plaintext": is_plaintext,
+            "detected_language": syntax_def.name,
         })
     })
 }
@@ -184,6 +201,42 @@ pub fn highlighted_snippet_for_string_newlines(
     }
     output.push_str("</pre>");
     output
+}
+
+pub fn scopify_string_newlines(
+    s: &str,
+    syntax: &SyntaxDefinition,
+) -> (Vec<String>, Vec<JsonValue>) {
+        let mut state = ParseState::new(syntax);
+        let mut stack = ScopeStack::new();
+        let mut scope_names: IndexSet<String> = IndexSet::new();
+
+        let mut output = Vec::new();
+        let mut offset = 0;
+        for line in LinesWithEndings::from(s) {
+            let ops = state.parse_line(&line);
+
+            for (s, op) in ScopeRegionIterator::new(&ops, &line) {
+                stack.apply(op);
+                if s.is_empty() { // we don't care about ops applied inbetween bytes
+                    continue;
+                }
+
+                let mut affected_by_scopes = Vec::new();
+                for name in stack.as_slice() {
+                   let (name_index, _) = scope_names.insert_full(name.to_string());
+                   affected_by_scopes.push(name_index);
+                }
+                output.push(json!({"offset": offset, "length": s.len(), "scopes": affected_by_scopes}));
+                offset += s.len();
+            }
+        }
+
+        let mut scope_names_serializable = Vec::new();
+        for scope_name in scope_names.iter() {
+            scope_names_serializable.push(scope_name.clone())
+        }
+        (scope_names_serializable, output)
 }
 
 fn main() {
