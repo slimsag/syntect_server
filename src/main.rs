@@ -7,9 +7,11 @@ extern crate rayon;
 #[macro_use] extern crate serde_derive;
 extern crate serde_json;
 extern crate syntect;
+extern crate rocket_cors;
 extern crate indexmap;
 
 use rocket_contrib::json::{Json, JsonValue};
+use rocket_cors::{AllowedOrigins};
 use std::env;
 use std::path::Path;
 use syntect::highlighting::ThemeSet;
@@ -248,9 +250,25 @@ fn main() {
         Err(_) => list_features(),
     };
 
-    rocket::ignite()
-        .mount("/", routes![index, health])
-        .register(catchers![not_found])
+    let mut r = rocket::ignite().mount("/", routes![index, health]);
+
+    // CORS handling
+    let cors: Option<rocket_cors::Cors> = match env::var("SYNTECT_SERVER_ALLOW_ORIGIN_STAR") {
+        Ok(v) => if v == "true" {
+            let cors = rocket_cors::CorsOptions {
+                allowed_origins: AllowedOrigins::all(),
+                ..Default::default()
+            };
+            Some(cors.to_cors().unwrap())
+        } else { None },
+        Err(_) => None,
+    };
+    match cors {
+        Some(v) => r = {r.attach(v)} ,
+        None => {}
+    };
+
+    r.register(catchers![not_found])
         .launch();
 }
 
